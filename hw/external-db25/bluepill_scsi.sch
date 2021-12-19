@@ -595,7 +595,7 @@ U 1 1 6162738D
 P 5200 2500
 F 0 "J2" H 5380 2409 50  0000 L CNN
 F 1 "DB25_Male_MountingHoles" H 4250 850 50  0000 L CNN
-F 2 "Connector_Dsub:DSUB-25_Male_Horizontal_P2.77x2.84mm_EdgePinOffset4.94mm_Housed_MountingHolesOffset7.48mm" H 5200 2500 50  0001 C CNN
+F 2 "Connector_Dsub:DSUB-25_Male_Horizontal_P2.77x2.84mm_EdgePinOffset7.70mm_Housed_MountingHolesOffset9.12mm" H 5200 2500 50  0001 C CNN
 F 3 " ~" H 5200 2500 50  0001 C CNN
 	1    5200 2500
 	-1   0    0    1   
