@@ -62,7 +62,6 @@
 #define MAX_BLOCKSIZE 2048     // Maximum BLOCK size
 
 // SDFAT
-#define SD1_CONFIG SdSpiConfig(PA4, DEDICATED_SPI, SD_SCK_MHZ(SPI_FULL_SPEED), &SPI)
 SdFs SD;
 
 #if DEBUG == 1
@@ -272,7 +271,7 @@ byte SCSI_INFO_BUF[36] = {
 void onFalseInit(void);
 void noSDCardFound(void);
 void onBusReset(void);
-void initFileLog(void);
+void initFileLog(int);
 void finalizeFileLog(void);
 
 /*
@@ -439,14 +438,26 @@ void setup()
 
   LED_ON();
 
-  // clock = 36MHz , about 4Mbytes/sec
-  if(!SD.begin(SD1_CONFIG)) {
+  int mhz = 50;
+  bool sdReady = false;
+  while (mhz >= 32 && !sdReady)
+  {
+    if(SD.begin(SdSpiConfig(PA4, DEDICATED_SPI, SD_SCK_MHZ(mhz), &SPI))) {
+      sdReady = true;
+    }
+    else
+    {
+      mhz--;
+    }
+  }
+  if(!sdReady) {
 #if DEBUG > 0
     Serial.println("SD initialization failed!");
 #endif
     noSDCardFound();
   }
-  initFileLog();
+  initFileLog(mhz);
+
   readSCSIDeviceConfig();
   readSDCardInfo();
 
@@ -544,7 +555,7 @@ void setup()
 /*
  * Setup initialization logfile
  */
-void initFileLog() {
+void initFileLog(int mhz) {
   LOG_FILE = SD.open(LOG_FILENAME, O_WRONLY | O_CREAT | O_TRUNC);
   LOG_FILE.println("BlueSCSI <-> SD - https://github.com/erichelgeson/BlueSCSI");
   LOG_FILE.print("VERSION: ");
@@ -559,6 +570,10 @@ void initFileLog() {
   LOG_FILE.println(SD_FAT_VERSION_STR);
   LOG_FILE.print("SdFat Max FileName Length: ");
   LOG_FILE.println(MAX_FILE_PATH);
+  LOG_FILE.print("SD1_Config: ");
+  LOG_FILE.print(mhz);
+  LOG_FILE.println(" Mhz");
+  LOG_FILE.sync();
   LOG_FILE.println("Initialized SD Card - lets go!");
   LOG_FILE.sync();
 }
