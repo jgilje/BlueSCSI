@@ -218,11 +218,12 @@ SdFs SD;
 // Put DB and DP in input mode
 #define SCSI_DB_INPUT()  { PBREG->CRL=(PBREG->CRL &0xfffffff0)|DB_MODE_IN ; PBREG->CRH = 0x11111111*DB_MODE_IN; }
 
-// HDDiamge file
+// HDD image file
 #define HDIMG_ID_POS  2                 // Position to embed ID number
 #define HDIMG_LUN_POS 3                 // Position to embed LUN numbers
 #define HDIMG_BLK_POS 5                 // Position to embed block size numbers
 #define MAX_FILE_PATH 32                // Maximum file name length
+#define RESERVE_FREE  -1                // No reservation
 
 // HDD image
 typedef struct hddimg_struct
@@ -230,6 +231,8 @@ typedef struct hddimg_struct
   FsFile      m_file;                 // File object
   uint64_t    m_fileSize;             // File size
   size_t      m_blocksize;            // SCSI BLOCK size
+  uint8_t     m_reservation_id = RESERVE_FREE; // Reservation ID for Release/Reserve
+  uint8_t     m_reserved_by_id = RESERVE_FREE; // ID of the target reserving
 }HDDIMG;
 HDDIMG  img[NUM_SCSIID][NUM_SCSILUN]; // Maximum number
 
@@ -240,6 +243,7 @@ volatile bool m_resetJmp = false;     // Call longjmp on reset
 jmp_buf       m_resetJmpBuf;
 
 byte          scsi_id_mask;              // Mask list of responding SCSI IDs
+byte          m_initiator_scsi_id;       // Current target SCSI-ID
 byte          m_id;                      // Currently responding SCSI-ID
 byte          m_lun;                     // Logical unit number currently responding
 byte          m_sts;                     // Status byte
@@ -760,7 +764,7 @@ void onFalseInit(void)
 }
 
 /*
- * No SC Card found, blink 5x fast
+ * No SD Card found, blink 5x fast
  */
 void noSDCardFound(void)
 {
@@ -1469,6 +1473,56 @@ byte onReadBuffer(byte mode, uint32_t allocLength)
 }
 
 /*
+ * On Release Reserve
+*/
+byte onReleaseReserve(const byte *cdb, HDDIMG *dev) {
+  byte cmd = cdb[0];
+  int reservation_id = cdb[2];
+  int extent_reservation = cdb[1] & 0x01;
+  int third_party = (cdb[1] >> 4) & 0x01;
+  int third_party_id = (cdb[1] >> 1) & 0x07;
+  reservation_id = third_party ? third_party_id : reservation_id;
+
+  if (extent_reservation)
+  {
+    m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    m_addition_sense = SCSI_ASC_INVALID_FIELD_IN_CDB;
+    return SCSI_STATUS_CHECK_CONDITION;
+  }
+
+  int allowed_action = ((dev->m_reserved_by_id == m_initiator_scsi_id) ||
+                       (dev->m_reservation_id == reservation_id));
+  if(cmd == SCSI_RESERVE)
+  {
+    if((dev->m_reservation_id == RESERVE_FREE) || allowed_action)
+    {
+      dev->m_reserved_by_id = m_initiator_scsi_id;
+      dev->m_reservation_id = reservation_id;
+
+      return SCSI_STATUS_GOOD;
+    }
+    else
+    {
+      return SCSI_STATUS_RESERVATION_CONFLICT;
+    }
+  }
+  else // SCSI_RELEASE
+  {
+    if(dev->m_reservation_id != RESERVE_FREE && allowed_action)
+    {
+      dev->m_reservation_id = RESERVE_FREE;
+      dev->m_reserved_by_id = RESERVE_FREE;
+      return SCSI_STATUS_GOOD;
+    }
+    else
+    {
+      return SCSI_STATUS_RESERVATION_CONFLICT;
+    }
+  }
+  return SCSI_STATUS_GOOD;
+}
+
+/*
  * On Send Diagnostic
  */
 byte onSendDiagnostic(byte flags)
@@ -1524,8 +1578,8 @@ void loop()
   // If the ID to respond is not driven, wait for the next
   //byte db = readIO();
   //byte scsiid = db & scsi_id_mask;
-  byte scsiid = readIO() & scsi_id_mask;
-  if((scsiid) == 0) {
+  m_initiator_scsi_id = readIO() & scsi_id_mask;
+  if((m_initiator_scsi_id) == 0) {
     delayMicroseconds(1);
     return;
   }
@@ -1541,7 +1595,7 @@ void loop()
   SCSI_BSY_ACTIVE();     // Turn only BSY output ON, ACTIVE
 
   // Ask for a TARGET-ID to respond
-  m_id = 31 - __builtin_clz(scsiid);
+  m_id = 31 - __builtin_clz(m_initiator_scsi_id);
 
   // Wait until SEL becomes inactive
   while(isHigh(gpio_read(SEL)) && isLow(gpio_read(BSY))) {
@@ -1650,6 +1704,17 @@ void loop()
   LOG(m_lun);
 
   LOGN("");
+  // If this device is reserved, and the current initiator id is not the reserved by id, then
+  if(m_img->m_reserved_by_id != RESERVE_FREE && m_initiator_scsi_id != m_img->m_reserved_by_id)
+  {
+    // Return conflict if not one of these commands
+    if(cmd[0] != SCSI_INQUIRY && cmd[0] != SCSI_REQUEST_SENSE && cmd[0] != SCSI_RELEASE &&
+       (cmd[0] == SCSI_PREVENT_ALLOW_REMOVAL && ((cmd[4] & 1) != 0))) // Prevent removal only allowed if prevent is 1
+    {
+      m_sts |= SCSI_STATUS_RESERVATION_CONFLICT;
+      goto Status;
+    }
+  }
   switch(cmd[0]) {
   case SCSI_READ6:
     LOGN("[Read6]");
@@ -1734,6 +1799,11 @@ void loop()
   case SCSI_SEND_DIAG:
     m_sts |= onSendDiagnostic(cmd[1]);
     break;
+  case SCSI_RELEASE:
+  case SCSI_RESERVE:
+    LOGN("[ReleaseReserve]");
+    m_sts |= onReleaseReserve(cmd, m_img);
+    break;
   case SCSI_LOCK_UNLOCK_CACHE: // Commands we dont have anything to do but can safely respond GOOD.
   case SCSI_PREFETCH:          // In the future we could implement something to mimic these.
   case SCSI_PREVENT_ALLOW_REMOVAL:
@@ -1749,6 +1819,7 @@ void loop()
     break;
   }
 
+Status:
   LOGN("Sts");
   SCSI_PHASE_CHANGE(SCSI_PHASE_STATUS);
   // Bus settle delay 400ns built in to writeHandshake
