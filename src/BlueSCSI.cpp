@@ -1093,6 +1093,11 @@ void verifyDataPhaseSD(uint32_t adds, uint32_t len)
  */
 byte onInquiryCommand(byte len)
 {
+  if (m_img == 0) {
+    SCSI_INFO_BUF[0] = 0x7f;
+  } else {
+    SCSI_INFO_BUF[0] = 0x0;
+  }
   writeDataPhase(len < 36 ? len : 36, SCSI_INFO_BUF);
   return SCSI_STATUS_GOOD;
 }
